@@ -1,0 +1,3 @@
+redis[hiredis]
+pandas
+owlready2
