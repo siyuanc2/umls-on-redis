@@ -7,7 +7,6 @@ from owlready2 import *
 from owlready2.pymedtermino2 import *
 from owlready2.pymedtermino2.umls import *
 
-
 def format_valuelist(input: Union[owlready2.prop.IndividualValueList, owlready2.prop.ClassValueList, None]) -> Union[List[str], None]:
     if not input:
         return None
@@ -25,6 +24,8 @@ def format_valuelist(input: Union[owlready2.prop.IndividualValueList, owlready2.
 
 if __name__ == "__main__":
     import argparse
+    import pandas as pd
+    import os
     def get_all_isa_parents(cpt_code: str) -> list:
         this_code = CPT_lib[cpt_code]
         parent_codes = []
@@ -41,12 +42,23 @@ if __name__ == "__main__":
     parser.add_argument("--sqlite_db_path", type=str, required=True, help="Path to where the SQLite database file will be stored")
     parser.add_argument("--redis_db_num", type=int, required=True, help="Redis database number to use")
     parser.add_argument("--umls_release_file_path", type=str, required=True, help="Path to the UMLS release file")
+    parser.add_argument("--cptlink_consolidated_code_list_path", type=str, required=False, default=None, help="Path to the CPTLink consolidated code list csv file")
+    parser.add_argument("--cptlink_clinician_descriptor_path", type=str, required=False, default=None, help="Path to the CPTLink clinician descriptor csv file")
     args = parser.parse_args()
 
-    print("Importing UMLS data into SQLite database")
-    default_world.set_backend(filename=args.sqlite_db_path)
-    import_umls(args.umls_release_file_path, terminologies=['ICD10', 'CPT', 'HCPCS', 'HCPT', 'ICD10CM', 'ICD10PCS'])
-    default_world.save()
+    if args.cptlink_consolidated_code_list_path:
+        cptlink_codelist = pd.read_csv(args.cptlink_consolidated_code_list_path, dtype={"Concept Id": str, "CPT Code": str, "Current Descriptor Effective Date": str, "Test Name": str, "Lab Name": str, "Manufacturer Name": str}, index_col=None, header=0, na_filter=False)
+    if args.cptlink_clinician_descriptor_path:
+        clinician_descriptors = pd.read_csv(args.cptlink_clinician_descriptor_path, dtype={"Concept Id": str, "CPT Code": str, "Clinician Descriptor Id": str}, index_col=None, header=0, na_filter=False)
+
+    if not os.path.exists(args.sqlite_db_path):
+        print("Importing UMLS data into SQLite database")
+        default_world.set_backend(filename=args.sqlite_db_path)
+        import_umls(args.umls_release_file_path, terminologies=['ICD10', 'CPT', 'HCPCS', 'HCPT', 'ICD10CM', 'ICD10PCS'])
+        default_world.save()
+    else:
+        print("Using existing SQLite database")
+        default_world.set_backend(filename=args.sqlite_db_path)
 
     print("Writing CPT data to Redis")
     PYM = get_ontology("http://PYM/").load()
@@ -67,18 +79,20 @@ if __name__ == "__main__":
     # Look up all CPT codes, and store the relevant information in a dictionary, put into redis
     count = 0
 
-    # for code in cptlink_codelist["CPT Code"].tolist():
-    for code in range(0, 99999):
-        code = str(code).zfill(5)
-        #Ensure that the code is a 5-digit alphanumerić string
-        # if not code.isalnum() or len(code) != 5:
-        #     print(f"Skipping {code}")
+    if args.cptlink_consolidated_code_list_path:
+        list_all_codes = cptlink_codelist["CPT Code"].tolist()
+    else:
+        list_all_codes = [str(c).zfill(5) for c in range(0, 99999)]
+
+    for code in list_all_codes:
         concept = CPT_lib[code]
         if concept is None:
             continue
-        # Get the lay term for the CPT code from the "Consumer" column in the CPTLink code list
-        # lay_term=cptlink_codelist.loc[cptlink_codelist["CPT Code"] == code, "Consumer"].values
-        # lay_term = lay_term[0] if len(lay_term) > 0 else None
+        # Get the lay term for the CPT code from the "Consumer" column in the CPTLink consolidated code list
+        lay_term = None
+        if args.cptlink_consolidated_code_list_path:
+            lay_term=cptlink_codelist.loc[cptlink_codelist["CPT Code"] == code, "Consumer"].values
+            lay_term = lay_term[0] if len(lay_term) > 0 else None
 
         #Get all is_a parents of the CPT code
         is_a_parent_codes, is_a_parents = get_all_isa_parents(code)
@@ -97,16 +111,20 @@ if __name__ == "__main__":
             "definition": str(concept.label.first()),
             "is_a_code": is_a_parent_codes,
             "is_a": is_a_parents,
-            # "lay_term": lay_term,
+            "lay_term": lay_term,
             "guidelines": format_valuelist(concept.guideline),
             "addl_guidelines": format_valuelist(concept.additional_guideline),
             "do_not_code_with_str": format_valuelist(concept.do_not_code_with),
-            "do_not_code_with": [x.name for x in concept.do_not_code_with], 
+            "do_not_code_with": [x.name for x in concept.do_not_code_with],
             "has_add_on_code_str": format_valuelist(concept.has_add_on_code),
             "has_add_on_code": [x.name for x in concept.has_add_on_code],
             "is_add_on_code_to": [],
-            # "effective_date": cptlink_codelist.loc[cptlink_codelist["CPT Code"] == code, "Current Descriptor Effective Date"].values[0] if len(cptlink_codelist.loc[cptlink_codelist["CPT Code"] == code, "Current Descriptor Effective Date"].values) > 0 else None,
         }
+        if args.cptlink_consolidated_code_list_path:
+            entry["effective_date"] = cptlink_codelist.loc[cptlink_codelist["CPT Code"] == code, "Current Descriptor Effective Date"].values[0] if len(cptlink_codelist.loc[cptlink_codelist["CPT Code"] == code, "Current Descriptor Effective Date"].values) > 0 else None
+        if args.cptlink_clinician_descriptor_path:
+            entry["clinician_descriptor_id"] = clinician_descriptors.loc[clinician_descriptors["CPT Code"] == code, "Clinician Descriptor Id"].values[0] if len(clinician_descriptors.loc[clinician_descriptors["CPT Code"] == code, "Clinician Descriptor Id"].values) > 0 else None
+            entry["clinician_descriptor"] = clinician_descriptors.loc[clinician_descriptors["CPT Code"] == code, "Clinician Descriptor"].values[0] if len(clinician_descriptors.loc[clinician_descriptors["CPT Code"] == code, "Clinician Descriptor"].values) > 0 else None
 
         # Add the CPT code to the list of ancestors for each code it is add-on code for
         for add_on_code in concept.has_add_on_code:
