@@ -120,12 +120,12 @@ if __name__ == "__main__":
 
     for code, ancestors in has_add_on_code_ancestors.items():
         #print (f"(code): (ancestors)")
-        entry = r.get(f"162132:: {code}")
+        entry = r.get(f"162132::{code}")
 
         if entry:
             entry = json.loads(entry)
             entry["is_add_on_code_to"].extend(ancestors)
-            r.set(f"162132:: {code}", json.dumps(entry))
+            r.set(f"162132::{code}", json.dumps(entry))
 
     # At this step, is_a_descendants only has keys for the lowest level parent codes. Add the rest of the parent codes
     for code in num_is_a_descendants.keys():
